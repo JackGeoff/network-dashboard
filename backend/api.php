@@ -1,168 +1,148 @@
 <?php
-ini_set('display_errors', '0'); // Prevent error messages from being output to response
+ini_set('display_errors', '0');
 
 header('Content-Type: application/json');
-header('Access-Control-Allow-Origin: *'); // CORS for localhost dev; restrict in prod
+header('Access-Control-Allow-Origin: *');
 header('Access-Control-Allow-Methods: GET, POST, PUT, DELETE');
 header('Access-Control-Allow-Headers: Content-Type');
 
-// Rate limiting: Simple session-based (max 60 req/min)
 session_start();
-if (!isset($_SESSION['requests'])) $_SESSION['requests'] = [];
-$_SESSION['requests'][] = time();
-$_SESSION['requests'] = array_filter($_SESSION['requests'], fn($t) => $t > time() - 60);
-if (count($_SESSION['requests']) > 60) {
+
+// Simple rate limit
+$_SESSION['r'] = $_SESSION['r'] ?? [];
+$_SESSION['r'][] = time();
+$_SESSION['r'] = array_filter($_SESSION['r'], fn($t) => $t > time() - 60);
+if (count($_SESSION['r']) > 60) {
     http_response_code(429);
-    echo json_encode(['error' => 'Rate limit exceeded']);
+    echo json_encode(['error' => 'Rate limit']);
     exit;
 }
 
-// JSON storage
 $devicesFile = __DIR__ . '/devices.json';
+$devices = file_exists($devicesFile)
+    ? json_decode(file_get_contents($devicesFile), true) ?? []
+    : [];
 
-// Safely initialize devices
-$devices = [];
-if (file_exists($devicesFile)) {
-    $content = @file_get_contents($devicesFile); // Suppress warning if fails
-    if ($content !== false) {
-        $devices = json_decode($content, true) ?? [];
-    }
-} else {
-    @file_put_contents($devicesFile, json_encode([])); // Suppress if write fails (e.g., permissions)
+function saveDevices($d, $f) {
+    file_put_contents($f, json_encode($d));
 }
 
-// Improved Routing: Strip script name from path
 $path = parse_url($_SERVER['REQUEST_URI'], PHP_URL_PATH);
-$script_name = '/backend/api.php';
-$resource_path = str_replace($script_name, '', $path);
-$parts = explode('/', trim($resource_path, '/'));
+$base = '/backend/api.php';
+$route = trim(str_replace($base, '', $path), '/');
+$parts = explode('/', $route);
+
 $resource = $parts[0] ?? '';
 $id = $parts[1] ?? null;
 $method = $_SERVER['REQUEST_METHOD'];
 
-// Sanitize inputs
-function sanitize($input) {
-    return htmlspecialchars(trim($input), ENT_QUOTES, 'UTF-8');
+function clean($v) {
+    return htmlspecialchars(trim($v), ENT_QUOTES);
 }
 
+/* ---------------- DEVICES ---------------- */
 if ($resource === 'devices') {
+
     if ($method === 'GET') {
-        echo json_encode(array_values($devices)); // List all
-    } elseif ($method === 'POST') {
-        $data = json_decode(file_get_contents('php://input'), true);
-        $newId = count($devices) + 1;
-        $devices[$newId] = [
-            'id' => $newId,
-            'name' => sanitize($data['name']),
-            'host' => sanitize($data['host']),
-            'snmp_enabled' => (bool) $data['snmp_enabled'],
-            'snmp_community' => sanitize($data['snmp_community'] ?? 'public'),
-            'snmp_version' => sanitize($data['snmp_version'] ?? '2c')
+        echo json_encode(array_values($devices));
+        exit;
+    }
+
+    if ($method === 'POST') {
+        $d = json_decode(file_get_contents('php://input'), true);
+        $id = count($devices) + 1;
+        $devices[$id] = [
+            'id' => $id,
+            'name' => clean($d['name']),
+            'host' => clean($d['host']),
+            'snmp_enabled' => (bool)$d['snmp_enabled'],
+            'snmp_community' => clean($d['snmp_community'] ?? 'public'),
+            'snmp_version' => clean($d['snmp_version'] ?? '2c')
         ];
-        @file_put_contents($devicesFile, json_encode($devices));
+        saveDevices($devices, $devicesFile);
         echo json_encode(['success' => true]);
-    } elseif ($method === 'PUT' && $id) {
-        $data = json_decode(file_get_contents('php://input'), true);
-        if (isset($devices[$id])) {
-            $devices[$id]['name'] = sanitize($data['name']);
-            $devices[$id]['host'] = sanitize($data['host']);
-            $devices[$id]['snmp_enabled'] = (bool) $data['snmp_enabled'];
-            $devices[$id]['snmp_community'] = sanitize($data['snmp_community'] ?? 'public');
-            $devices[$id]['snmp_version'] = sanitize($data['snmp_version'] ?? '2c');
-            @file_put_contents($devicesFile, json_encode($devices));
-            echo json_encode(['success' => true]);
-        } else {
-            http_response_code(404);
-            echo json_encode(['error' => 'Device not found']);
-        }
-    } elseif ($method === 'DELETE' && $id) {
-        if (isset($devices[$id])) {
-            unset($devices[$id]);
-            @file_put_contents($devicesFile, json_encode($devices));
-            echo json_encode(['success' => true]);
-        } else {
-            http_response_code(404);
-            echo json_encode(['error' => 'Device not found']);
-        }
+        exit;
     }
-} elseif ($resource === 'ping') {
-    $host = sanitize($_GET['host'] ?? '');
+
+    if ($method === 'PUT' && $id && isset($devices[$id])) {
+        $d = json_decode(file_get_contents('php://input'), true);
+        $devices[$id] = array_merge($devices[$id], [
+            'name' => clean($d['name']),
+            'host' => clean($d['host']),
+            'snmp_enabled' => (bool)$d['snmp_enabled'],
+            'snmp_community' => clean($d['snmp_community'] ?? 'public'),
+            'snmp_version' => clean($d['snmp_version'] ?? '2c')
+        ]);
+        saveDevices($devices, $devicesFile);
+        echo json_encode(['success' => true]);
+        exit;
+    }
+
+    if ($method === 'DELETE' && $id && isset($devices[$id])) {
+        unset($devices[$id]);
+        saveDevices($devices, $devicesFile);
+        echo json_encode(['success' => true]);
+        exit;
+    }
+}
+
+/* ---------------- HEALTH CHECK (TCP) ---------------- */
+if ($resource === 'ping') {
+    $host = clean($_GET['host'] ?? '');
     if (!$host) {
-        http_response_code(400);
         echo json_encode(['error' => 'Host required']);
         exit;
     }
 
-    // ICMP ping (Linux: ping -c1 -W1; Windows: ping -n1 -w1000)
-    $os = PHP_OS_FAMILY === 'Windows' ? 'win' : 'linux';
-    $cmd = $os === 'win' 
-        ? "ping -n 1 -w 1000 " . escapeshellarg($host)
-        : "ping -c 1 -W 1 " . escapeshellarg($host);
-    exec($cmd, $output, $return);
+    $port = 80;
+    $start = microtime(true);
+    $fp = @fsockopen($host, $port, $errno, $errstr, 1);
+    $latency = round((microtime(true) - $start) * 1000, 2);
 
-    $alive = $return === 0;
-    $latency = null;
-    $lastSeen = $alive ? date('Y-m-d H:i:s') : null;
-
-    if ($alive) {
-        foreach ($output as $line) {
-            if (preg_match('/time=([\d.]+) ?ms/i', $line, $matches)) {
-                $latency = (float) $matches[1];
-                break;
-            }
-        }
+    if ($fp) {
+        fclose($fp);
+        echo json_encode([
+            'alive' => true,
+            'latency' => $latency,
+            'last_seen' => date('Y-m-d H:i:s')
+        ]);
+    } else {
+        echo json_encode([
+            'alive' => false,
+            'latency' => null,
+            'last_seen' => null
+        ]);
     }
+    exit;
+}
 
-    echo json_encode(['alive' => $alive, 'latency' => $latency, 'last_seen' => $lastSeen]);
-} elseif ($resource === 'traceroute') {
-    $host = sanitize($_GET['host'] ?? '');
-    if (!$host) {
-        http_response_code(400);
-        echo json_encode(['error' => 'Host required']);
-        exit;
-    }
+/* ---------------- TRACEROUTE ---------------- */
+if ($resource === 'traceroute') {
+    $host = clean($_GET['host'] ?? '');
+    exec("traceroute -w 1 " . escapeshellarg($host), $out);
+    echo json_encode(['output' => implode("\n", $out)]);
+    exit;
+}
 
-    // Traceroute (Linux: traceroute -w1; Windows: tracert -w1000)
-    $os = PHP_OS_FAMILY === 'Windows' ? 'win' : 'linux';
-    $cmd = $os === 'win' 
-        ? "tracert -w 1000 " . escapeshellarg($host)
-        : "traceroute -w 1 " . escapeshellarg($host);
-    exec($cmd, $output);
-
-    echo json_encode(['output' => implode("\n", $output)]);
-} elseif ($resource === 'snmp') {
+/* ---------------- SNMP ---------------- */
+if ($resource === 'snmp') {
     if (!function_exists('snmpget')) {
-        echo json_encode(['error' => 'SNMP extension not installed']);
+        echo json_encode(['error' => 'SNMP not installed']);
         exit;
     }
 
-    $host = sanitize($_GET['host'] ?? '');
-    $community = sanitize($_GET['community'] ?? 'public');
-    $version = $_GET['version'] ?? '2c';
+    $host = clean($_GET['host'] ?? '');
+    $community = clean($_GET['community'] ?? 'public');
 
-    if (!$host) {
-        http_response_code(400);
-        echo json_encode(['error' => 'Host required']);
-        exit;
-    }
-
-    // Standard OIDs for first interface (expandable)
-    $inOid = '.1.3.6.1.2.1.2.2.1.10.1';
-    $outOid = '.1.3.6.1.2.1.2.2.1.16.1';
-
-    $inOctets = @snmpget($host, $community, $inOid, 1000000, 3); // Suppress if fails
-    $outOctets = @snmpget($host, $community, $outOid, 1000000, 3);
-
-    // Parse values (snmpget returns "INTEGER: value")
-    $inValue = $inOctets ? (int) preg_replace('/[^0-9]/', '', $inOctets) : null;
-    $outValue = $outOctets ? (int) preg_replace('/[^0-9]/', '', $outOctets) : null;
+    $in = @snmpget($host, $community, '.1.3.6.1.2.1.2.2.1.10.1');
+    $out = @snmpget($host, $community, '.1.3.6.1.2.1.2.2.1.16.1');
 
     echo json_encode([
-        'in_octets' => $inValue,
-        'out_octets' => $outValue,
-        // Add port stats here if expanded (e.g., snmpwalk for all interfaces)
+        'in_octets' => $in ? (int)preg_replace('/\D/', '', $in) : null,
+        'out_octets' => $out ? (int)preg_replace('/\D/', '', $out) : null
     ]);
-} else {
-    http_response_code(404);
-    echo json_encode(['error' => 'Not found']);
+    exit;
 }
+
+http_response_code(404);
+echo json_encode(['error' => 'Not found']);
