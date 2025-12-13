@@ -1,4 +1,6 @@
 <?php
+ini_set('display_errors', '0'); // Prevent error messages from being output to response
+
 header('Content-Type: application/json');
 header('Access-Control-Allow-Origin: *'); // CORS for localhost dev; restrict in prod
 header('Access-Control-Allow-Methods: GET, POST, PUT, DELETE');
@@ -17,8 +19,17 @@ if (count($_SESSION['requests']) > 60) {
 
 // JSON storage
 $devicesFile = __DIR__ . '/devices.json';
-if (!file_exists($devicesFile)) file_put_contents($devicesFile, json_encode([]));
-$devices = json_decode(file_get_contents($devicesFile), true);
+
+// Safely initialize devices
+$devices = [];
+if (file_exists($devicesFile)) {
+    $content = @file_get_contents($devicesFile); // Suppress warning if fails
+    if ($content !== false) {
+        $devices = json_decode($content, true) ?? [];
+    }
+} else {
+    @file_put_contents($devicesFile, json_encode([])); // Suppress if write fails (e.g., permissions)
+}
 
 // Improved Routing: Strip script name from path
 $path = parse_url($_SERVER['REQUEST_URI'], PHP_URL_PATH);
@@ -48,7 +59,7 @@ if ($resource === 'devices') {
             'snmp_community' => sanitize($data['snmp_community'] ?? 'public'),
             'snmp_version' => sanitize($data['snmp_version'] ?? '2c')
         ];
-        file_put_contents($devicesFile, json_encode($devices));
+        @file_put_contents($devicesFile, json_encode($devices));
         echo json_encode(['success' => true]);
     } elseif ($method === 'PUT' && $id) {
         $data = json_decode(file_get_contents('php://input'), true);
@@ -58,7 +69,7 @@ if ($resource === 'devices') {
             $devices[$id]['snmp_enabled'] = (bool) $data['snmp_enabled'];
             $devices[$id]['snmp_community'] = sanitize($data['snmp_community'] ?? 'public');
             $devices[$id]['snmp_version'] = sanitize($data['snmp_version'] ?? '2c');
-            file_put_contents($devicesFile, json_encode($devices));
+            @file_put_contents($devicesFile, json_encode($devices));
             echo json_encode(['success' => true]);
         } else {
             http_response_code(404);
@@ -67,7 +78,7 @@ if ($resource === 'devices') {
     } elseif ($method === 'DELETE' && $id) {
         if (isset($devices[$id])) {
             unset($devices[$id]);
-            file_put_contents($devicesFile, json_encode($devices));
+            @file_put_contents($devicesFile, json_encode($devices));
             echo json_encode(['success' => true]);
         } else {
             http_response_code(404);
@@ -139,8 +150,8 @@ if ($resource === 'devices') {
     $inOid = '.1.3.6.1.2.1.2.2.1.10.1';
     $outOid = '.1.3.6.1.2.1.2.2.1.16.1';
 
-    $inOctets = snmpget($host, $community, $inOid, 1000000, 3); // timeout 1s, retries 3
-    $outOctets = snmpget($host, $community, $outOid, 1000000, 3);
+    $inOctets = @snmpget($host, $community, $inOid, 1000000, 3); // Suppress if fails
+    $outOctets = @snmpget($host, $community, $outOid, 1000000, 3);
 
     // Parse values (snmpget returns "INTEGER: value")
     $inValue = $inOctets ? (int) preg_replace('/[^0-9]/', '', $inOctets) : null;
