@@ -13,19 +13,19 @@ document.addEventListener('DOMContentLoaded', () => {
     const tracerouteOutput = document.getElementById('tracerouteOutput');
 
     let devices = [];
-    let bandwidthCache = {}; // Cache for SNMP bandwidth deltas
+    let bandwidthCache = {};
 
     // Toggle SNMP fields
     snmpEnabledCheckbox.addEventListener('change', () => {
         snmpFields.style.display = snmpEnabledCheckbox.checked ? 'block' : 'none';
     });
 
-    // Cancel edit
     cancelEditBtn.addEventListener('click', resetForm);
 
-    // Submit form (add/edit)
+    // Add / Edit device
     deviceForm.addEventListener('submit', async (e) => {
         e.preventDefault();
+
         const id = editIdInput.value;
         const data = {
             name: nameInput.value.trim(),
@@ -36,7 +36,9 @@ document.addEventListener('DOMContentLoaded', () => {
         };
 
         const method = id ? 'PUT' : 'POST';
-        const url = id ? `/backend/api.php/devices/${id}` : '/backend/api.php/devices';
+        const url = id
+            ? `/backend/api.php/devices/${id}`
+            : `/backend/api.php/devices`;
 
         await fetch(url, {
             method,
@@ -48,7 +50,6 @@ document.addEventListener('DOMContentLoaded', () => {
         loadDevices();
     });
 
-    // Reset form
     function resetForm() {
         deviceForm.reset();
         editIdInput.value = '';
@@ -56,72 +57,56 @@ document.addEventListener('DOMContentLoaded', () => {
         cancelEditBtn.style.display = 'none';
     }
 
-    // Load devices and monitor
+    // Load devices
     async function loadDevices() {
-        try {
-            const res = await fetch('/backend/api.php/devices');
-            if (!res.ok) {
-                console.error('API error:', res.status, await res.text());
-                tableBody.innerHTML = '<tr><td colspan="7">Error loading devices. Check console for details.</td></tr>';
-                return;
-            }
-            const devices = await res.json();
-            if (!Array.isArray(devices)) {
-                console.error('Unexpected response:', devices);
-                tableBody.innerHTML = '<tr><td colspan="7">Unexpected data format. Check console.</td></tr>';
-                return;
-            }
+        const res = await fetch('/backend/api.php/devices');
+        devices = await res.json(); // FIXED (no const)
 
-            tableBody.innerHTML = '';
-            devices.forEach(device => {
-                const row = document.createElement('tr');
-                row.innerHTML = `
-                    <td>${device.name}</td>
-                    <td>${device.host}</td>
-                    <td id="status-${device.id}">-</td>
-                    <td id="latency-${device.id}">-</td>
-                    <td id="lastseen-${device.id}">-</td>
-                    <td id="bandwidth-${device.id}">-</td>
-                    <td>
-                        <button class="btn btn-sm btn-primary" onclick="editDevice(${device.id})">Edit</button>
-                        <button class="btn btn-sm btn-danger" onclick="deleteDevice(${device.id})">Delete</button>
-                        <button class="btn btn-sm btn-info" onclick="runTraceroute('${device.host}')">Traceroute</button>
-                    </td>
-                `;
-                tableBody.appendChild(row);
-            });
+        tableBody.innerHTML = '';
+        devices.forEach(device => {
+            const row = document.createElement('tr');
+            row.innerHTML = `
+                <td>${device.name}</td>
+                <td>${device.host}</td>
+                <td id="status-${device.id}">-</td>
+                <td id="latency-${device.id}">-</td>
+                <td id="lastseen-${device.id}">-</td>
+                <td id="bandwidth-${device.id}">-</td>
+                <td>
+                    <button class="btn btn-sm btn-primary" onclick="editDevice(${device.id})">Edit</button>
+                    <button class="btn btn-sm btn-danger" onclick="deleteDevice(${device.id})">Delete</button>
+                    <button class="btn btn-sm btn-info" onclick="runTraceroute('${device.host}')">Traceroute</button>
+                </td>
+            `;
+            tableBody.appendChild(row);
+        });
 
-            monitorDevices();
-        } catch (error) {
-            console.error('Fetch error:', error);
-            tableBody.innerHTML = '<tr><td colspan="7">Network error. Check your connection or server status.</td></tr>';
-        }
+        monitorDevices();
     }
 
-    // Edit device
+    // Edit
     window.editDevice = (id) => {
         const device = devices.find(d => d.id === id);
-        if (device) {
-            editIdInput.value = id;
-            nameInput.value = device.name;
-            hostInput.value = device.host;
-            snmpEnabledCheckbox.checked = device.snmp_enabled;
-            snmpCommunityInput.value = device.snmp_community || 'public';
-            snmpVersionSelect.value = device.snmp_version || '2c';
-            snmpFields.style.display = device.snmp_enabled ? 'block' : 'none';
-            cancelEditBtn.style.display = 'inline-block';
-        }
+        if (!device) return;
+
+        editIdInput.value = id;
+        nameInput.value = device.name;
+        hostInput.value = device.host;
+        snmpEnabledCheckbox.checked = device.snmp_enabled;
+        snmpCommunityInput.value = device.snmp_community || 'public';
+        snmpVersionSelect.value = device.snmp_version || '2c';
+        snmpFields.style.display = device.snmp_enabled ? 'block' : 'none';
+        cancelEditBtn.style.display = 'inline-block';
     };
 
-    // Delete device
+    // Delete
     window.deleteDevice = async (id) => {
-        if (confirm('Are you sure?')) {
-            await fetch(`/backend/api.php/devices/${id}`, { method: 'DELETE' });
-            loadDevices();
-        }
+        if (!confirm('Delete this device?')) return;
+        await fetch(`/backend/api.php/devices/${id}`, { method: 'DELETE' });
+        loadDevices();
     };
 
-    // Run traceroute
+    // Traceroute
     window.runTraceroute = async (host) => {
         tracerouteOutput.textContent = 'Running traceroute...';
         tracerouteModal.show();
@@ -131,52 +116,58 @@ document.addEventListener('DOMContentLoaded', () => {
         tracerouteOutput.textContent = data.output || data.error || 'No output';
     };
 
-    // Monitor devices (ping + SNMP)
+    // Monitor devices (TCP + SNMP)
     async function monitorDevices() {
         for (const device of devices) {
             try {
-                // Ping
-                const pingRes = await fetch(`/backend/api.php/ping?host=${encodeURIComponent(device.host)}`);
-                if (!pingRes.ok) throw new Error('Ping API failed');
-                const pingData = await pingRes.json();
+                // TCP health check
+                const res = await fetch(`/backend/api.php/ping?host=${encodeURIComponent(device.host)}`);
+                const data = await res.json();
 
-                document.getElementById(`status-${device.id}`).innerHTML = pingData.alive 
-                    ? '<span class="status-online">Online</span>' 
-                    : '<span class="status-offline">Offline</span>';
-                document.getElementById(`latency-${device.id}`).textContent = pingData.latency ?? '-';
-                document.getElementById(`lastseen-${device.id}`).textContent = pingData.last_seen ?? '-';
+                document.getElementById(`status-${device.id}`).innerHTML =
+                    data.alive
+                        ? '<span class="status-online">Online</span>'
+                        : '<span class="status-offline">Offline</span>';
 
-                // SNMP if enabled
+                document.getElementById(`latency-${device.id}`).textContent =
+                    data.latency ?? '-';
+
+                document.getElementById(`lastseen-${device.id}`).textContent =
+                    data.last_seen ?? '-';
+
+                // SNMP
                 if (device.snmp_enabled) {
-                    const snmpRes = await fetch(`/backend/api.php/snmp?host=${encodeURIComponent(device.host)}&community=${encodeURIComponent(device.snmp_community)}&version=${device.snmp_version}`);
-                    if (!snmpRes.ok) throw new Error('SNMP API failed');
+                    const snmpRes = await fetch(
+                        `/backend/api.php/snmp?host=${device.host}&community=${device.snmp_community}&version=${device.snmp_version}`
+                    );
                     const snmpData = await snmpRes.json();
 
-                    const cacheKey = device.id;
                     let bandwidth = 'N/A';
+                    const key = device.id;
+                    const now = Date.now();
+
                     if (snmpData.in_octets && snmpData.out_octets) {
-                        const now = Date.now();
-                        if (bandwidthCache[cacheKey]) {
-                            const deltaTime = (now - bandwidthCache[cacheKey].timestamp) / 1000; // seconds
-                            const inDelta = snmpData.in_octets - bandwidthCache[cacheKey].in_octets;
-                            const outDelta = snmpData.out_octets - bandwidthCache[cacheKey].out_octets;
-                            const inKbps = (inDelta * 8 / deltaTime) / 1000; // bits per second to kbps
-                            const outKbps = (outDelta * 8 / deltaTime) / 1000;
-                            bandwidth = `${inKbps.toFixed(2)} kbps / ${outKbps.toFixed(2)} kbps`;
+                        if (bandwidthCache[key]) {
+                            const dt = (now - bandwidthCache[key].t) / 1000;
+                            const inKbps = ((snmpData.in_octets - bandwidthCache[key].in) * 8) / dt / 1000;
+                            const outKbps = ((snmpData.out_octets - bandwidthCache[key].out) * 8) / dt / 1000;
+                            bandwidth = `${inKbps.toFixed(2)} / ${outKbps.toFixed(2)} kbps`;
                         }
-                        bandwidthCache[cacheKey] = { in_octets: snmpData.in_octets, out_octets: snmpData.out_octets, timestamp: now };
+                        bandwidthCache[key] = {
+                            in: snmpData.in_octets,
+                            out: snmpData.out_octets,
+                            t: now
+                        };
                     }
+
                     document.getElementById(`bandwidth-${device.id}`).textContent = bandwidth;
                 }
-            } catch (error) {
-                console.error(`Error monitoring device ${device.id}:`, error);
-                // Optionally update row to show error
-                document.getElementById(`status-${device.id}`).innerHTML = '<span class="status-offline">Error</span>';
+            } catch (e) {
+                console.error(e);
             }
         }
     }
 
-    // Auto-refresh every 5 seconds
-    setInterval(loadDevices, 5000); // Full reload to sync any changes
-    loadDevices(); // Initial load
+    loadDevices();
+    setInterval(monitorDevices, 5000);
 });
