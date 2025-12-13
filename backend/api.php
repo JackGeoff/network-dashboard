@@ -20,11 +20,13 @@ $devicesFile = __DIR__ . '/devices.json';
 if (!file_exists($devicesFile)) file_put_contents($devicesFile, json_encode([]));
 $devices = json_decode(file_get_contents($devicesFile), true);
 
-// Routing
-$uri = parse_url($_SERVER['REQUEST_URI'], PHP_URL_PATH);
-$parts = explode('/', trim($uri, '/'));
-$resource = $parts[1] ?? '';
-$id = $parts[2] ?? null;
+// Improved Routing: Strip script name from path
+$path = parse_url($_SERVER['REQUEST_URI'], PHP_URL_PATH);
+$script_name = '/backend/api.php';
+$resource_path = str_replace($script_name, '', $path);
+$parts = explode('/', trim($resource_path, '/'));
+$resource = $parts[0] ?? '';
+$id = $parts[1] ?? null;
 $method = $_SERVER['REQUEST_METHOD'];
 
 // Sanitize inputs
