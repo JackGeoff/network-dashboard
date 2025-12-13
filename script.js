@@ -3,11 +3,14 @@ document.addEventListener('DOMContentLoaded', () => {
     const editIdInput = document.getElementById('editId');
     const nameInput = document.getElementById('name');
     const hostInput = document.getElementById('host');
+    const portInput = document.getElementById('port');
+
     const snmpEnabledCheckbox = document.getElementById('snmpEnabled');
     const snmpFields = document.getElementById('snmpFields');
     const snmpCommunityInput = document.getElementById('snmpCommunity');
     const snmpVersionSelect = document.getElementById('snmpVersion');
     const cancelEditBtn = document.getElementById('cancelEdit');
+
     const tableBody = document.querySelector('#devicesTable tbody');
     const tracerouteModal = new bootstrap.Modal(document.getElementById('tracerouteModal'));
     const tracerouteOutput = document.getElementById('tracerouteOutput');
@@ -15,21 +18,22 @@ document.addEventListener('DOMContentLoaded', () => {
     let devices = [];
     let bandwidthCache = {};
 
-    // Toggle SNMP fields
     snmpEnabledCheckbox.addEventListener('change', () => {
         snmpFields.style.display = snmpEnabledCheckbox.checked ? 'block' : 'none';
     });
 
     cancelEditBtn.addEventListener('click', resetForm);
 
-    // Add / Edit device
+    // ADD / EDIT DEVICE
     deviceForm.addEventListener('submit', async (e) => {
         e.preventDefault();
 
         const id = editIdInput.value;
+
         const data = {
             name: nameInput.value.trim(),
             host: hostInput.value.trim(),
+            port: Number(portInput.value),
             snmp_enabled: snmpEnabledCheckbox.checked,
             snmp_community: snmpCommunityInput.value.trim(),
             snmp_version: snmpVersionSelect.value
@@ -53,21 +57,22 @@ document.addEventListener('DOMContentLoaded', () => {
     function resetForm() {
         deviceForm.reset();
         editIdInput.value = '';
+        portInput.value = 80;
         snmpFields.style.display = 'none';
         cancelEditBtn.style.display = 'none';
     }
 
-    // Load devices
+    // LOAD DEVICES
     async function loadDevices() {
         const res = await fetch('/backend/api.php/devices');
-        devices = await res.json(); // FIXED (no const)
+        devices = await res.json();
 
         tableBody.innerHTML = '';
         devices.forEach(device => {
             const row = document.createElement('tr');
             row.innerHTML = `
                 <td>${device.name}</td>
-                <td>${device.host}</td>
+                <td>${device.host}:${device.port}</td>
                 <td id="status-${device.id}">-</td>
                 <td id="latency-${device.id}">-</td>
                 <td id="lastseen-${device.id}">-</td>
@@ -84,29 +89,31 @@ document.addEventListener('DOMContentLoaded', () => {
         monitorDevices();
     }
 
-    // Edit
+    // EDIT
     window.editDevice = (id) => {
-        const device = devices.find(d => d.id === id);
-        if (!device) return;
+        const d = devices.find(x => x.id === id);
+        if (!d) return;
 
         editIdInput.value = id;
-        nameInput.value = device.name;
-        hostInput.value = device.host;
-        snmpEnabledCheckbox.checked = device.snmp_enabled;
-        snmpCommunityInput.value = device.snmp_community || 'public';
-        snmpVersionSelect.value = device.snmp_version || '2c';
-        snmpFields.style.display = device.snmp_enabled ? 'block' : 'none';
+        nameInput.value = d.name;
+        hostInput.value = d.host;
+        portInput.value = d.port || 80;
+
+        snmpEnabledCheckbox.checked = d.snmp_enabled;
+        snmpCommunityInput.value = d.snmp_community || 'public';
+        snmpVersionSelect.value = d.snmp_version || '2c';
+        snmpFields.style.display = d.snmp_enabled ? 'block' : 'none';
         cancelEditBtn.style.display = 'inline-block';
     };
 
-    // Delete
+    // DELETE
     window.deleteDevice = async (id) => {
         if (!confirm('Delete this device?')) return;
         await fetch(`/backend/api.php/devices/${id}`, { method: 'DELETE' });
         loadDevices();
     };
 
-    // Traceroute
+    // TRACEROUTE
     window.runTraceroute = async (host) => {
         tracerouteOutput.textContent = 'Running traceroute...';
         tracerouteModal.show();
@@ -116,51 +123,43 @@ document.addEventListener('DOMContentLoaded', () => {
         tracerouteOutput.textContent = data.output || data.error || 'No output';
     };
 
-    // Monitor devices (TCP + SNMP)
+    // MONITOR (TCP + SNMP)
     async function monitorDevices() {
-        for (const device of devices) {
+        for (const d of devices) {
             try {
-                // TCP health check
-                const res = await fetch(`/backend/api.php/ping?host=${encodeURIComponent(device.host)}`);
+                const res = await fetch(
+                    `/backend/api.php/ping?host=${encodeURIComponent(d.host)}&port=${d.port}`
+                );
                 const data = await res.json();
 
-                document.getElementById(`status-${device.id}`).innerHTML =
+                document.getElementById(`status-${d.id}`).innerHTML =
                     data.alive
                         ? '<span class="status-online">Online</span>'
                         : '<span class="status-offline">Offline</span>';
 
-                document.getElementById(`latency-${device.id}`).textContent =
-                    data.latency ?? '-';
+                document.getElementById(`latency-${d.id}`).textContent = data.latency ?? '-';
+                document.getElementById(`lastseen-${d.id}`).textContent = data.last_seen ?? '-';
 
-                document.getElementById(`lastseen-${device.id}`).textContent =
-                    data.last_seen ?? '-';
-
-                // SNMP
-                if (device.snmp_enabled) {
+                // SNMP (optional)
+                if (d.snmp_enabled) {
                     const snmpRes = await fetch(
-                        `/backend/api.php/snmp?host=${device.host}&community=${device.snmp_community}&version=${device.snmp_version}`
+                        `/backend/api.php/snmp?host=${d.host}&community=${d.snmp_community}&version=${d.snmp_version}`
                     );
-                    const snmpData = await snmpRes.json();
+                    const s = await snmpRes.json();
 
-                    let bandwidth = 'N/A';
-                    const key = device.id;
+                    let bw = 'N/A';
                     const now = Date.now();
 
-                    if (snmpData.in_octets && snmpData.out_octets) {
-                        if (bandwidthCache[key]) {
-                            const dt = (now - bandwidthCache[key].t) / 1000;
-                            const inKbps = ((snmpData.in_octets - bandwidthCache[key].in) * 8) / dt / 1000;
-                            const outKbps = ((snmpData.out_octets - bandwidthCache[key].out) * 8) / dt / 1000;
-                            bandwidth = `${inKbps.toFixed(2)} / ${outKbps.toFixed(2)} kbps`;
+                    if (s.in_octets && s.out_octets) {
+                        if (bandwidthCache[d.id]) {
+                            const dt = (now - bandwidthCache[d.id].t) / 1000;
+                            const inK = ((s.in_octets - bandwidthCache[d.id].i) * 8) / dt / 1000;
+                            const outK = ((s.out_octets - bandwidthCache[d.id].o) * 8) / dt / 1000;
+                            bw = `${inK.toFixed(2)} / ${outK.toFixed(2)} kbps`;
                         }
-                        bandwidthCache[key] = {
-                            in: snmpData.in_octets,
-                            out: snmpData.out_octets,
-                            t: now
-                        };
+                        bandwidthCache[d.id] = { i: s.in_octets, o: s.out_octets, t: now };
                     }
-
-                    document.getElementById(`bandwidth-${device.id}`).textContent = bandwidth;
+                    document.getElementById(`bandwidth-${d.id}`).textContent = bw;
                 }
             } catch (e) {
                 console.error(e);
