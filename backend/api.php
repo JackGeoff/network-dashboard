@@ -8,7 +8,6 @@ header('Access-Control-Allow-Headers: Content-Type');
 
 session_start();
 
-// Simple rate limit
 $_SESSION['r'] = $_SESSION['r'] ?? [];
 $_SESSION['r'][] = time();
 $_SESSION['r'] = array_filter($_SESSION['r'], fn($t) => $t > time() - 60);
@@ -27,6 +26,10 @@ function saveDevices($d, $f) {
     file_put_contents($f, json_encode($d));
 }
 
+function clean($v) {
+    return htmlspecialchars(trim($v), ENT_QUOTES);
+}
+
 $path = parse_url($_SERVER['REQUEST_URI'], PHP_URL_PATH);
 $base = '/backend/api.php';
 $route = trim(str_replace($base, '', $path), '/');
@@ -36,11 +39,7 @@ $resource = $parts[0] ?? '';
 $id = $parts[1] ?? null;
 $method = $_SERVER['REQUEST_METHOD'];
 
-function clean($v) {
-    return htmlspecialchars(trim($v), ENT_QUOTES);
-}
-
-/* ---------------- DEVICES ---------------- */
+/* ---------- DEVICES ---------- */
 if ($resource === 'devices') {
 
     if ($method === 'GET') {
@@ -48,37 +47,39 @@ if ($resource === 'devices') {
         exit;
     }
 
+    $data = json_decode(file_get_contents('php://input'), true);
+
     if ($method === 'POST') {
-        $d = json_decode(file_get_contents('php://input'), true);
         $id = count($devices) + 1;
         $devices[$id] = [
             'id' => $id,
-            'name' => clean($d['name']),
-            'host' => clean($d['host']),
-            'snmp_enabled' => (bool)$d['snmp_enabled'],
-            'snmp_community' => clean($d['snmp_community'] ?? 'public'),
-            'snmp_version' => clean($d['snmp_version'] ?? '2c')
+            'name' => clean($data['name']),
+            'host' => clean($data['host']),
+            'port' => (int)($data['port'] ?? 80),
+            'snmp_enabled' => (bool)$data['snmp_enabled'],
+            'snmp_community' => clean($data['snmp_community'] ?? 'public'),
+            'snmp_version' => clean($data['snmp_version'] ?? '2c')
         ];
         saveDevices($devices, $devicesFile);
         echo json_encode(['success' => true]);
         exit;
     }
 
-    if ($method === 'PUT' && $id && isset($devices[$id])) {
-        $d = json_decode(file_get_contents('php://input'), true);
+    if ($method === 'PUT' && isset($devices[$id])) {
         $devices[$id] = array_merge($devices[$id], [
-            'name' => clean($d['name']),
-            'host' => clean($d['host']),
-            'snmp_enabled' => (bool)$d['snmp_enabled'],
-            'snmp_community' => clean($d['snmp_community'] ?? 'public'),
-            'snmp_version' => clean($d['snmp_version'] ?? '2c')
+            'name' => clean($data['name']),
+            'host' => clean($data['host']),
+            'port' => (int)($data['port'] ?? 80),
+            'snmp_enabled' => (bool)$data['snmp_enabled'],
+            'snmp_community' => clean($data['snmp_community'] ?? 'public'),
+            'snmp_version' => clean($data['snmp_version'] ?? '2c')
         ]);
         saveDevices($devices, $devicesFile);
         echo json_encode(['success' => true]);
         exit;
     }
 
-    if ($method === 'DELETE' && $id && isset($devices[$id])) {
+    if ($method === 'DELETE' && isset($devices[$id])) {
         unset($devices[$id]);
         saveDevices($devices, $devicesFile);
         echo json_encode(['success' => true]);
@@ -86,15 +87,16 @@ if ($resource === 'devices') {
     }
 }
 
-/* ---------------- HEALTH CHECK (TCP) ---------------- */
+/* ---------- TCP STATUS CHECK ---------- */
 if ($resource === 'ping') {
     $host = clean($_GET['host'] ?? '');
+    $port = (int)($_GET['port'] ?? 80);
+
     if (!$host) {
         echo json_encode(['error' => 'Host required']);
         exit;
     }
 
-    $port = 80;
     $start = microtime(true);
     $fp = @fsockopen($host, $port, $errno, $errstr, 1);
     $latency = round((microtime(true) - $start) * 1000, 2);
@@ -116,7 +118,7 @@ if ($resource === 'ping') {
     exit;
 }
 
-/* ---------------- TRACEROUTE ---------------- */
+/* ---------- TRACEROUTE ---------- */
 if ($resource === 'traceroute') {
     $host = clean($_GET['host'] ?? '');
     exec("traceroute -w 1 " . escapeshellarg($host), $out);
@@ -124,7 +126,7 @@ if ($resource === 'traceroute') {
     exit;
 }
 
-/* ---------------- SNMP ---------------- */
+/* ---------- SNMP ---------- */
 if ($resource === 'snmp') {
     if (!function_exists('snmpget')) {
         echo json_encode(['error' => 'SNMP not installed']);
