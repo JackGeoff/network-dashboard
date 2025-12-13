@@ -5,6 +5,9 @@ FROM php:8.3-apache
 RUN apt-get update && apt-get install -y libsnmp-dev iputils-ping traceroute \
     && docker-php-ext-install snmp
 
+# Set setuid bit on ping and traceroute to allow non-root execution (fixes "Operation not permitted")
+RUN chmod u+s /bin/ping /usr/bin/traceroute
+
 # Disable display_errors to prevent HTML output in responses
 RUN echo 'display_errors = Off' > /usr/local/etc/php/conf.d/display_errors.ini
 
