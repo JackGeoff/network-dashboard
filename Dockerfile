@@ -5,9 +5,6 @@ FROM php:8.3-apache
 RUN apt-get update && apt-get install -y libsnmp-dev \
     && docker-php-ext-install snmp
 
-# Disable display_errors to prevent HTML output in responses
-RUN echo 'display_errors = Off' > /usr/local/etc/php/conf.d/display_errors.ini
-
 # Copy all project files to Apache's document root
 COPY . /var/www/html/
 
